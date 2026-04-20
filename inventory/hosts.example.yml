@@ -1,0 +1,12 @@
+all:
+  children:
+    edge:
+      hosts:
+        caaga-edge:
+          ansible_host: edge.example.net
+          ansible_user: rrniii
+    web:
+      hosts:
+        caaga-web:
+          ansible_host: web.example.net
+          ansible_user: azimuth

@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+import json
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+EDGE_SSH = [
+    "ssh",
+    "-o",
+    "StrictHostKeyChecking=no",
+    "-i",
+    "{{ web_replication_ssh_key_path }}",
+    "{{ web_replication_edge_user }}@{{ web_replication_edge_host }}",
+]
+EDGE_DB = "/var/lib/weewx/weewx.sdb"
+PG_DB = "{{ web_postgres_db }}"
+STATUS_PATH = Path("{{ web_status_dir }}/postgres-replication-status.json")
+STATE_DIR = Path("/home/{{ web_app_user }}/.local/state/weewx-postgres")
+BATCH_SIZE = 25000
+MAX_RUNTIME_SECONDS = 45
+EDGE_SQL_RETRIES = 6
+EDGE_SQL_RETRY_SECONDS = 2
+
+
+def run(cmd, *, input_text=None, check=True):
+    proc = subprocess.run(
+        cmd,
+        input=input_text,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if check and proc.returncode != 0:
+        raise RuntimeError(
+            f"Command failed ({proc.returncode}): {' '.join(map(shlex.quote, cmd))}\n"
+            f"stdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
+        )
+    return proc
+
+
+def run_edge_sql(sql, *, csv=False, header=False):
+    parts = ["sqlite3"]
+    if csv:
+        parts.append("-csv")
+    if header:
+        parts.append("-header")
+    parts.extend([EDGE_DB, sql])
+    remote_cmd = " ".join(shlex.quote(part) for part in parts)
+    last_error = None
+    for attempt in range(EDGE_SQL_RETRIES):
+        proc = run(EDGE_SSH + [remote_cmd], check=False)
+        if proc.returncode == 0:
+            return proc
+        last_error = proc
+        if "database is locked" not in proc.stderr.lower() or attempt == EDGE_SQL_RETRIES - 1:
+            break
+        time.sleep(EDGE_SQL_RETRY_SECONDS)
+    raise RuntimeError(
+        f"Command failed ({last_error.returncode}): {' '.join(map(shlex.quote, EDGE_SSH + [remote_cmd]))}\n"
+        f"stdout:\n{last_error.stdout}\n\nstderr:\n{last_error.stderr}"
+    )
+
+
+def psql(sql, *, at=False):
+    cmd = ["psql", "-d", PG_DB, "-v", "ON_ERROR_STOP=1"]
+    if at:
+        cmd.extend(["-At"])
+    cmd.extend(["-c", sql])
+    return run(cmd)
+
+
+def psql_script(sql):
+    return run(["psql", "-d", PG_DB, "-v", "ON_ERROR_STOP=1"], input_text=sql)
+
+
+def fetch_edge_schema():
+    proc = run_edge_sql("pragma table_info(archive);")
+    columns = []
+    for line in proc.stdout.strip().splitlines():
+        cid, name, ctype, notnull, default, pk = line.split("|", 5)
+        columns.append(
+            {
+                "name": name,
+                "type": ctype.upper(),
+                "notnull": notnull == "1",
+                "pk": pk == "1",
+            }
+        )
+    if not columns:
+        raise RuntimeError("No archive schema returned from edge host")
+    return columns
+
+
+def pg_type(col):
+    ctype = col["type"]
+    if "INT" in ctype:
+        return "bigint"
+    if "REAL" in ctype or "FLOA" in ctype or "DOUB" in ctype:
+        return "double precision"
+    return "text"
+
+
+def ensure_pg_schema(columns):
+    defs = []
+    pk = []
+    for col in columns:
+        chunk = f'"{col["name"]}" {pg_type(col)}'
+        if col["notnull"]:
+            chunk += " NOT NULL"
+        defs.append(chunk)
+        if col["pk"]:
+            pk.append(f'"{col["name"]}"')
+    if pk:
+        defs.append(f"PRIMARY KEY ({', '.join(pk)})")
+    create_sql = f"""
+CREATE TABLE IF NOT EXISTS archive (
+  {", ".join(defs)}
+);
+CREATE TABLE IF NOT EXISTS replication_state (
+  name text PRIMARY KEY,
+  value_json jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+"""
+    psql_script(create_sql)
+
+
+def pg_max_datetime():
+    proc = psql("SELECT COALESCE(MAX(\"dateTime\"), 0) FROM archive;", at=True)
+    return int(proc.stdout.strip() or "0")
+
+
+def edge_max_datetime():
+    proc = run_edge_sql("select coalesce(max(dateTime),0) from archive;")
+    return int(proc.stdout.strip() or "0")
+
+
+def edge_row_count():
+    proc = run_edge_sql("select count(*) from archive;")
+    return int(proc.stdout.strip() or "0")
+
+
+def pg_row_count():
+    proc = psql("SELECT COUNT(*) FROM archive;", at=True)
+    return int(proc.stdout.strip() or "0")
+
+
+def edge_row_count_since(ts, csv_path):
+    remote_sql = (
+        f"select * from archive where dateTime > {int(ts)} "
+        f"order by dateTime limit {BATCH_SIZE};"
+    )
+    parts = ["sqlite3", "-csv", "-header", EDGE_DB, remote_sql]
+    remote_cmd = " ".join(shlex.quote(part) for part in parts)
+    last_error = None
+    for attempt in range(EDGE_SQL_RETRIES):
+        with csv_path.open("w", encoding="utf-8") as handle:
+            proc = subprocess.Popen(
+                EDGE_SSH + [remote_cmd],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            assert proc.stdout is not None
+            row_count = -1
+            for line in proc.stdout:
+                handle.write(line)
+                row_count += 1
+            stderr = proc.stderr.read() if proc.stderr is not None else ""
+            rc = proc.wait()
+        if rc == 0:
+            return max(row_count, 0)
+        last_error = (rc, stderr)
+        if "database is locked" not in stderr.lower() or attempt == EDGE_SQL_RETRIES - 1:
+            break
+        time.sleep(EDGE_SQL_RETRY_SECONDS)
+    raise RuntimeError(
+        f"Command failed ({last_error[0]}): {' '.join(map(shlex.quote, EDGE_SSH + [remote_cmd]))}\n"
+        f"stderr:\n{last_error[1]}"
+    )
+
+
+def import_csv(csv_path):
+    sql = f"""
+BEGIN;
+CREATE TEMP TABLE archive_import (LIKE archive INCLUDING DEFAULTS) ON COMMIT DROP;
+\\copy archive_import FROM '{csv_path}' WITH (FORMAT csv, HEADER true);
+INSERT INTO archive SELECT * FROM archive_import ON CONFLICT ("dateTime") DO NOTHING;
+COMMIT;
+"""
+    psql_script(sql)
+
+
+def write_status(payload):
+    STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATUS_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    state_sql = """
+INSERT INTO replication_state (name, value_json)
+VALUES ('archive_replication', %s::jsonb)
+ON CONFLICT (name) DO UPDATE
+SET value_json = EXCLUDED.value_json,
+    updated_at = now();
+"""
+    payload_json = json.dumps(payload).replace("'", "''")
+    try:
+        psql_script(state_sql % (f"'{payload_json}'",))
+    except Exception:
+        # Keep the JSON status file even if the SQL metadata table is not ready yet.
+        pass
+
+
+def iso(epoch):
+    if not epoch:
+        return "n/a"
+    return datetime.fromtimestamp(int(epoch), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def elapsed_seconds(start):
+    return (datetime.now(timezone.utc) - start).total_seconds()
+
+
+def main():
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    start = datetime.now(timezone.utc)
+    payload = {
+        "started_at_utc": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "started_at_epoch": int(start.timestamp()),
+        "result": "ok",
+    }
+    try:
+        columns = fetch_edge_schema()
+        ensure_pg_schema(columns)
+        local_max = pg_max_datetime()
+        local_count_before = pg_row_count()
+        remote_max = edge_max_datetime()
+        remote_count = edge_row_count()
+        payload["edge_latest_epoch"] = remote_max
+        payload["edge_latest_utc"] = iso(remote_max)
+        payload["edge_row_count"] = remote_count
+        payload["web_latest_epoch_before"] = local_max
+        payload["web_latest_utc_before"] = iso(local_max)
+        payload["web_row_count_before"] = local_count_before
+        payload["batch_size"] = BATCH_SIZE
+        payload["max_runtime_seconds"] = MAX_RUNTIME_SECONDS
+        if remote_max <= local_max:
+            payload["rows_fetched"] = 0
+            payload["rows_imported"] = 0
+            payload["batches_completed"] = 0
+        else:
+            rows_fetched = 0
+            rows_imported = 0
+            batches_completed = 0
+            current_local_max = local_max
+            while remote_max > current_local_max and elapsed_seconds(start) < MAX_RUNTIME_SECONDS:
+                with tempfile.NamedTemporaryFile("w+", suffix=".csv", delete=False) as handle:
+                    csv_path = Path(handle.name)
+                try:
+                    rows = edge_row_count_since(current_local_max, csv_path)
+                    rows_fetched += rows
+                    if rows <= 0:
+                        break
+                    import_csv(csv_path)
+                    rows_imported += rows
+                    batches_completed += 1
+                    current_local_max = pg_max_datetime()
+                    if rows < BATCH_SIZE:
+                        break
+                finally:
+                    csv_path.unlink(missing_ok=True)
+            payload["rows_fetched"] = rows_fetched
+            payload["rows_imported"] = rows_imported
+            payload["batches_completed"] = batches_completed
+        new_local_max = pg_max_datetime()
+        new_local_count = pg_row_count()
+        payload["web_latest_epoch_after"] = new_local_max
+        payload["web_latest_utc_after"] = iso(new_local_max)
+        payload["web_row_count_after"] = new_local_count
+        payload["progress_percent"] = round((new_local_count / remote_count) * 100, 2) if remote_count else 100.0
+        payload["caught_up"] = remote_max <= new_local_max
+        payload["replication_lag_seconds"] = max(remote_max - new_local_max, 0)
+    except Exception as exc:  # pragma: no cover - operational guard
+        payload["result"] = "error"
+        payload["error"] = str(exc)
+        raise
+    finally:
+        finish = datetime.now(timezone.utc)
+        payload["finished_at_utc"] = finish.strftime("%Y-%m-%dT%H:%M:%SZ")
+        payload["finished_at_epoch"] = int(finish.timestamp())
+        payload["duration_seconds"] = max(int((finish - start).total_seconds()), 0)
+        write_status(payload)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)

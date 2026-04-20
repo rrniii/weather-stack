@@ -1,0 +1,10 @@
+[Unit]
+Description=Run WeeWX PostgreSQL replication every minute
+
+[Timer]
+OnCalendar={{ web_replication_schedule }}
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+- hosts: edge
+  become: true
+  gather_facts: true
+  roles:
+    - edge
+
+- hosts: web
+  become: true
+  gather_facts: true
+  roles:
+    - web

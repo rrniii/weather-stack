@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Windy upload every five minutes
+
+[Timer]
+OnCalendar={{ windy_upload_timer_schedule }}
+AccuracySec=10s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

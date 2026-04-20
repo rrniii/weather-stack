@@ -1,0 +1,10 @@
+[Unit]
+Description=Check edge WeeWX freshness and publish a status snapshot
+After=network.target
+
+[Service]
+Type=oneshot
+User={{ edge_app_user }}
+Group={{ edge_app_group }}
+Environment=HOME=/home/{{ edge_app_user }}
+ExecStart=/usr/local/bin/update-edge-status.sh

@@ -1,0 +1,10 @@
+[Unit]
+Description=Replicate WeeWX archive rows from edge SQLite into local PostgreSQL
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User={{ web_app_user }}
+Group={{ web_app_group }}
+ExecStart=/usr/local/bin/replicate_weewx_archive.py

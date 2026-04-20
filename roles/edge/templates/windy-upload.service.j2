@@ -1,0 +1,11 @@
+[Unit]
+Description=Upload latest WeeWX archive row to Windy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=weewx
+Group=weewx
+EnvironmentFile=/etc/weewx/windy.env
+ExecStart=/usr/local/bin/windy-upload.py

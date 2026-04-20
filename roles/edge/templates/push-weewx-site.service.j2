@@ -1,0 +1,11 @@
+[Unit]
+Description=Push generated WeeWX site content to the webserver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User={{ edge_app_user }}
+Group={{ edge_app_group }}
+Environment=HOME=/home/{{ edge_app_user }}
+ExecStart=/usr/local/bin/push-weewx-site.sh

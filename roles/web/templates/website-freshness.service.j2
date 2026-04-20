@@ -1,0 +1,9 @@
+[Unit]
+Description=Check website freshness and publish a local status snapshot
+After=network.target
+
+[Service]
+Type=oneshot
+User={{ web_app_user }}
+Group={{ web_app_group }}
+ExecStart=/usr/local/bin/update-web-status.sh

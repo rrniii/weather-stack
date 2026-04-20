@@ -1,0 +1,65 @@
+#!/bin/sh
+set -eu
+umask 0002
+
+# Push the already-generated site so generation and publication can be monitored separately.
+WEB_ROOT={{ edge_web_root }}
+STATUS_DIR="$WEB_ROOT/status"
+STATE_DIR=/home/{{ edge_app_user }}/.local/state/weewx-monitor
+TARGET="{{ edge_push_target }}"
+SSH_CMD="ssh -F /home/{{ edge_app_user }}/.ssh/config"
+TMP_LOG="$(mktemp)"
+START_EPOCH="$(date -u +%s)"
+START_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+RESULT="ok"
+
+mkdir -p "$STATUS_DIR" "$STATE_DIR"
+/usr/local/bin/update-edge-status.sh || true
+
+if ! rsync -az --delete --itemize-changes --filter='P status/webserver-status.json' --filter='P status/index.html' -e "$SSH_CMD" "$WEB_ROOT/" "$TARGET" >"$TMP_LOG" 2>&1; then
+    RESULT="error"
+fi
+
+END_EPOCH="$(date -u +%s)"
+END_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+DURATION="$((END_EPOCH - START_EPOCH))"
+cp "$TMP_LOG" "$STATE_DIR/last-push.log"
+if [ "$RESULT" = "ok" ]; then
+    printf '%s\n' "$END_EPOCH" > "$STATE_DIR/last-push-success.epoch"
+fi
+
+python3 - "$STATUS_DIR/edge-push-status.json" "$START_ISO" "$START_EPOCH" "$END_ISO" "$END_EPOCH" "$DURATION" "$RESULT" "$TARGET" "$TMP_LOG" <<'PY'
+import json
+import socket
+import sys
+from pathlib import Path
+
+(path, start_iso, start_epoch, end_iso, end_epoch, duration, result, target, log_path) = sys.argv[1:]
+lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
+payload = {
+    "host": socket.gethostname(),
+    "started_at_utc": start_iso,
+    "started_at_epoch": int(start_epoch),
+    "finished_at_utc": end_iso,
+    "finished_at_epoch": int(end_epoch),
+    "duration_seconds": int(duration),
+    "result": result,
+    "target": target,
+    "rsync_tail": lines[-20:],
+}
+with open(path, "w", encoding="ascii") as fh:
+    json.dump(payload, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+PY
+
+if [ "$RESULT" = "ok" ]; then
+    rsync -az --filter='P webserver-status.json' --filter='P index.html' -e "$SSH_CMD" "$STATUS_DIR/" {{ edge_push_status_target }} >>"$TMP_LOG" 2>&1 || RESULT="error"
+fi
+
+if [ "$RESULT" != "ok" ]; then
+    logger -t push-weewx-site "Edge push failed; see $STATE_DIR/last-push.log"
+    rm -f "$TMP_LOG"
+    exit 1
+fi
+
+rm -f "$TMP_LOG"

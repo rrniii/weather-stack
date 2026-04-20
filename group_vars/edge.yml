@@ -1,0 +1,31 @@
+edge_app_user: rrniii
+edge_app_group: rrniii
+
+edge_push_host_alias: webserver-push
+edge_push_host_name: web-push.example.internal
+edge_push_remote_user: azimuth
+edge_push_identity_file: ~/.ssh/id_ed25519_web_push
+edge_push_strict_host_key_checking: "no"
+edge_push_target: "{{ edge_push_host_alias }}:{{ web_root }}/"
+edge_push_status_target: "{{ edge_push_host_alias }}:{{ web_status_dir }}/"
+
+edge_push_timer_schedule: "*:01/5"
+edge_status_timer_schedule: "*:02/5"
+windy_upload_timer_schedule: "*:0/5:20"
+
+weewx_root: /
+weewx_station_location: CAAGA
+weewx_station_latitude: 53.833513
+weewx_station_longitude: -1.5362879
+weewx_station_altitude_value: 117
+weewx_station_altitude_unit: meter
+weewx_station_url: https://caagawx.org/
+weewx_serial_port: /dev/ttyUSB0
+weewx_html_root: "{{ edge_web_root }}"
+weewx_skin_name: neowx-material
+weewx_standard_report_timing: "*/5 * * * *"
+weewx_enable_standard_report: true
+weewx_group_speed: mile_per_hour
+weewx_target_unit: US
+weewx_archive_interval: 60
+weewx_station_registry_enabled: false

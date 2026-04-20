@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the website freshness check every five minutes
+
+[Timer]
+OnCalendar={{ website_freshness_schedule }}
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

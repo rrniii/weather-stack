@@ -1,0 +1,18 @@
+web_app_user: azimuth
+web_app_group: azimuth
+
+web_server_names:
+  - caagawx.org.uk
+  - localhost
+  - www.caagawx.org.uk
+
+web_nginx_site_name: caagawx.org
+website_freshness_schedule: "*:02/5"
+web_replication_schedule: "*:00/1"
+
+web_postgres_db: weewx
+web_postgres_role: azimuth
+
+web_replication_edge_user: rrniii
+web_replication_edge_host: edge-replication.example.internal
+web_replication_ssh_key_path: /home/{{ web_app_user }}/.ssh/id_ed25519_edge_replication

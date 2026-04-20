@@ -1,0 +1,138 @@
+- name: Install edge packages
+  ansible.builtin.apt:
+    name:
+      - weewx
+      - python3
+      - rsync
+      - sqlite3
+    state: present
+    update_cache: true
+
+- name: Ensure edge directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ edge_web_root }}"
+      owner: weewx
+      group: weewx
+      mode: "2775"
+    - path: "{{ edge_web_root }}/status"
+      owner: weewx
+      group: weewx
+      mode: "2775"
+    - path: "/home/{{ edge_app_user }}/.ssh"
+      owner: "{{ edge_app_user }}"
+      group: "{{ edge_app_group }}"
+      mode: "0700"
+    - path: "/home/{{ edge_app_user }}/.local/state/weewx-monitor"
+      owner: "{{ edge_app_user }}"
+      group: "{{ edge_app_group }}"
+      mode: "0755"
+
+- name: Ensure generated site tree belongs to weewx
+  ansible.builtin.file:
+    path: "{{ edge_web_root }}"
+    state: directory
+    owner: weewx
+    group: weewx
+    recurse: true
+
+- name: Deploy neoWX skin
+  ansible.builtin.copy:
+    src: etc/weewx/skins/neowx-material/
+    dest: /etc/weewx/skins/neowx-material/
+    owner: weewx
+    group: weewx
+    mode: u=rwX,g=rwX,o=rX
+    directory_mode: "2775"
+
+- name: Deploy edge templates and scripts
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - src: weewx.conf.j2
+      dest: /etc/weewx/weewx.conf
+      owner: root
+      group: root
+      mode: "0644"
+    - src: ssh-config.j2
+      dest: "/home/{{ edge_app_user }}/.ssh/config"
+      owner: "{{ edge_app_user }}"
+      group: "{{ edge_app_group }}"
+      mode: "0600"
+    - src: push-weewx-site.sh.j2
+      dest: /usr/local/bin/push-weewx-site.sh
+      owner: root
+      group: root
+      mode: "0755"
+    - src: update-edge-status.sh.j2
+      dest: /usr/local/bin/update-edge-status.sh
+      owner: root
+      group: root
+      mode: "0755"
+    - src: windy.env.j2
+      dest: /etc/weewx/windy.env
+      owner: root
+      group: weewx
+      mode: "0640"
+    - src: push-weewx-site.service.j2
+      dest: /etc/systemd/system/push-weewx-site.service
+      owner: root
+      group: root
+      mode: "0644"
+    - src: push-weewx-site.timer.j2
+      dest: /etc/systemd/system/push-weewx-site.timer
+      owner: root
+      group: root
+      mode: "0644"
+    - src: edge-freshness.service.j2
+      dest: /etc/systemd/system/edge-freshness.service
+      owner: root
+      group: root
+      mode: "0644"
+    - src: edge-freshness.timer.j2
+      dest: /etc/systemd/system/edge-freshness.timer
+      owner: root
+      group: root
+      mode: "0644"
+    - src: windy-upload.service.j2
+      dest: /etc/systemd/system/windy-upload.service
+      owner: root
+      group: root
+      mode: "0644"
+    - src: windy-upload.timer.j2
+      dest: /etc/systemd/system/windy-upload.timer
+      owner: root
+      group: root
+      mode: "0644"
+
+- name: Deploy edge static scripts
+  ansible.builtin.copy:
+    src: usr/local/bin/windy-upload.py
+    dest: /usr/local/bin/windy-upload.py
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Reload systemd on edge
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable and start edge services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - weewx.service
+    - push-weewx-site.timer
+    - edge-freshness.timer
+    - windy-upload.timer

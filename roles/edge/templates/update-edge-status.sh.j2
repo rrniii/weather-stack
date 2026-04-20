@@ -1,0 +1,85 @@
+#!/bin/sh
+set -eu
+umask 0002
+
+WEB_ROOT={{ edge_web_root }}
+STATUS_DIR="$WEB_ROOT/status"
+DB_PATH={{ edge_weewx_db_path }}
+STATE_DIR=/home/{{ edge_app_user }}/.local/state/weewx-monitor
+MAX_AGE_SECONDS="${MAX_AGE_SECONDS:-900}"
+
+mkdir -p "$STATUS_DIR" "$STATE_DIR"
+
+now_epoch="$(date -u +%s)"
+now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+service_status="$(systemctl is-active weewx || true)"
+html_mtime="$(stat -c %Y "$WEB_ROOT/index.html")"
+html_iso="$(date -u -d "@$html_mtime" +%Y-%m-%dT%H:%M:%SZ)"
+html_age="$((now_epoch - html_mtime))"
+archive_epoch="$(sqlite3 "$DB_PATH" 'select coalesce(max(dateTime), 0) from archive;')"
+archive_iso="$(date -u -d "@$archive_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+archive_age="$((now_epoch - archive_epoch))"
+push_epoch="0"
+push_iso="never"
+push_age="-1"
+if [ -f "$STATE_DIR/last-push-success.epoch" ]; then
+    push_epoch="$(cat "$STATE_DIR/last-push-success.epoch")"
+    push_iso="$(date -u -d "@$push_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+    push_age="$((now_epoch - push_epoch))"
+fi
+
+generation_health="ok"
+if [ "$service_status" != "active" ] || [ "$html_age" -gt "$MAX_AGE_SECONDS" ] || [ "$archive_age" -gt "$MAX_AGE_SECONDS" ]; then
+    generation_health="stale"
+    logger -t update-edge-status "Edge freshness degraded: service=${service_status} html_age=${html_age}s archive_age=${archive_age}s"
+fi
+
+python3 - "$STATUS_DIR/edge-status.json" "$DB_PATH" "$now_iso" "$now_epoch" "$service_status" "$html_iso" "$html_mtime" "$html_age" "$archive_iso" "$archive_epoch" "$archive_age" "$push_iso" "$push_epoch" "$push_age" "$generation_health" <<'PY'
+import json, socket, sqlite3, sys
+from datetime import datetime
+(path, db_path, now_iso, now_epoch, service_status, html_iso, html_epoch, html_age,
+ archive_iso, archive_epoch, archive_age, push_iso, push_epoch, push_age,
+ generation_health) = sys.argv[1:]
+
+def maybe_int(value):
+    try: return int(value)
+    except ValueError: return value
+
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+row = conn.execute('select dateTime, txBatteryStatus, consBatteryVoltage from archive order by dateTime desc limit 1').fetchone()
+conn.close()
+latest_battery = {}
+attention_items = []
+record_time_utc = 'n/a'
+if row is not None:
+    record_time_utc = datetime.utcfromtimestamp(int(row['dateTime'])).strftime('%Y-%m-%dT%H:%M:%SZ')
+    if row['txBatteryStatus'] is not None:
+        latest_battery['txBatteryStatus'] = row['txBatteryStatus']
+        if float(row['txBatteryStatus']) != 0.0:
+            attention_items.append('ISS transmitter battery needs attention')
+    if row['consBatteryVoltage'] is not None:
+        latest_battery['consBatteryVoltage'] = row['consBatteryVoltage']
+
+battery_summary = 'ok' if not attention_items else 'attention'
+payload = {
+    'host': socket.gethostname(),
+    'generated_at_utc': now_iso,
+    'generated_at_epoch': int(now_epoch),
+    'health': generation_health,
+    'checks': {
+        'weewx_service': {'status': service_status},
+        'generated_site': {'path': '{{ edge_web_root }}/index.html', 'mtime_utc': html_iso, 'mtime_epoch': int(html_epoch), 'age_seconds': int(html_age)},
+        'archive_database': {'path': '{{ edge_weewx_db_path }}', 'latest_record_utc': archive_iso, 'latest_record_epoch': int(archive_epoch), 'age_seconds': int(archive_age)},
+        'last_successful_push': {'utc': push_iso, 'epoch': maybe_int(push_epoch), 'age_seconds': maybe_int(push_age)},
+        'battery': {'summary': battery_summary, 'record_time_utc': record_time_utc, 'attention_items': attention_items, 'latest_record': latest_battery},
+    },
+}
+with open(path, 'w', encoding='ascii') as fh:
+    json.dump(payload, fh, indent=2, sort_keys=True)
+    fh.write('\n')
+PY
+
+if [ "$generation_health" = "stale" ]; then
+    exit 1
+fi

@@ -1,0 +1,8 @@
+stack_name: caaga-weather
+public_site_domain: caagawx.org
+
+web_root: /var/www/CAAGAWX.org
+web_status_dir: "{{ web_root }}/status"
+
+edge_web_root: /var/www/html/weewx
+edge_weewx_db_path: /var/lib/weewx/weewx.sdb

@@ -1,5 +1,6 @@
 web_app_user: azimuth
 web_app_group: azimuth
+ansible_become_password: "{{ web_sudo_password }}"
 
 web_server_names:
   - caagawx.org.uk

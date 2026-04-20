@@ -33,12 +33,27 @@
       group: "{{ edge_app_group }}"
       mode: "0755"
 
+- name: Ensure edge app user can write the generated site tree
+  ansible.builtin.user:
+    name: "{{ edge_app_user }}"
+    groups: weewx
+    append: true
+
 - name: Ensure generated site tree belongs to weewx
   ansible.builtin.file:
     path: "{{ edge_web_root }}"
     state: directory
     owner: weewx
     group: weewx
+    recurse: true
+
+- name: Ensure edge status files remain writable by the edge app user group
+  ansible.builtin.file:
+    path: "{{ edge_web_root }}/status"
+    state: directory
+    owner: weewx
+    group: weewx
+    mode: "u=rwX,g=rwX,o=rX"
     recurse: true
 
 - name: Deploy neoWX skin

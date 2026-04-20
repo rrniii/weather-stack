@@ -4,6 +4,8 @@
 # `ansible_host` can be an IP address or DNS name reachable from the machine
 # where you run the playbook.
 # `ansible_user` should be a user with sudo access on that host.
+# Add `ansible_ssh_private_key_file` for remote SSH access when needed.
+# For the local web host you can use `ansible_connection: local`.
 
 all:
   children:
@@ -12,6 +14,7 @@ all:
         caaga-edge:
           ansible_host: edge.example.net
           ansible_user: rrniii
+          ansible_ssh_private_key_file: /path/to/edge-admin-key
     web:
       hosts:
         caaga-web:

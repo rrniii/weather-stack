@@ -1,5 +1,6 @@
 edge_app_user: rrniii
 edge_app_group: rrniii
+ansible_become_password: "{{ edge_sudo_password }}"
 
 edge_push_host_alias: webserver-push
 edge_push_host_name: web-push.example.internal

@@ -8,6 +8,8 @@ web_server_names:
   - localhost
 
 web_nginx_site_name: caagawx.org
+web_tls_enabled: true
+web_tls_cert_name: caagawx.org
 website_freshness_schedule: "*:02/5"
 web_replication_schedule: "*:00/1"
 
